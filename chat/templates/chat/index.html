@@ -1,0 +1,482 @@
+{% extends "base.html" %}
+{% block title %}Axiom{% endblock %}
+{% block content %}
+<div
+  x-data="{
+    sidebarOpen: localStorage.getItem('axiom_sidebar_open')
+      ? localStorage.getItem('axiom_sidebar_open') === 'true'
+      : true
+  }"
+  x-init="$watch('sidebarOpen', value => localStorage.setItem('axiom_sidebar_open', value))"
+  class="h-full flex bg-neutral-950 text-neutral-100"
+>
+  <div class="relative flex shrink-0">
+    <aside
+      x-cloak
+      :class="sidebarOpen ? 'w-72 px-5' : 'w-0 px-0'"
+      class="bg-neutral-950/80 py-6 overflow-hidden transition-all duration-200"
+    >
+    <div class="flex items-center justify-between mb-6">
+      <h2 class="text-lg font-semibold">Sessions</h2>
+    </div>
+    <div class="flex items-center justify-between mb-4">
+      <a
+        href="{% url 'chat_home' %}?new=1"
+        class="text-xs uppercase tracking-widest text-neutral-400 hover:text-white"
+      >
+        New
+      </a>
+    </div>
+    <div class="space-y-3">
+      {% for session in sessions %}
+        <a
+          href="{% url 'chat_session' session.id %}"
+          class="block rounded-xl border border-neutral-800 px-3 py-2 text-sm hover:border-neutral-600 {% if active_session and session.id == active_session.id %}bg-neutral-900{% endif %}"
+        >
+          <div class="font-medium truncate">{{ session.title|default:"Untitled" }}</div>
+          <div class="text-xs text-neutral-500 mt-1">{{ session.updated_at|date:"M d, H:i" }}</div>
+        </a>
+      {% empty %}
+        <p class="text-sm text-neutral-500">No sessions yet.</p>
+      {% endfor %}
+    </div>
+  </aside>
+
+    </aside>
+
+    <div class="w-px bg-neutral-800/80 transition-all duration-200"></div>
+
+    <button
+      class="absolute -right-3 top-6 z-10 h-7 w-7 rounded-full border border-neutral-700 bg-neutral-900 text-neutral-200 hover:text-white hover:border-neutral-500 transition"
+      @click="sidebarOpen = !sidebarOpen"
+      type="button"
+      aria-label="Toggle sidebar"
+    >
+      <i :class="sidebarOpen ? 'fa-solid fa-angles-left' : 'fa-solid fa-angles-right'"></i>
+    </button>
+  </div>
+
+  <main class="flex-1 flex flex-col h-full">
+    <header class="border-b border-neutral-800">
+      <div class="mx-auto w-full max-w-3xl px-4 py-4 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+        <a href="{% url 'chat_home' %}?new=1" class="block">
+          <h1 class="text-xl font-semibold">Axiom</h1>
+          <p class="text-xs text-neutral-500">Research agent</p>
+        </a>
+        </div>
+        <div class="flex items-center gap-4 text-lg text-neutral-300">
+        <a
+          href="{% url 'chat_home' %}?new=1"
+          class="hover:text-white"
+          aria-label="New chat"
+        >
+          <i class="fa-regular fa-pen-to-square"></i>
+        </a>
+        <form method="post" action="{% url 'logout' %}">
+          {% csrf_token %}
+          <button class="hover:text-white" aria-label="Log out">
+            <i class="fa-solid fa-right-from-bracket"></i>
+          </button>
+        </form>
+        </div>
+      </div>
+    </header>
+
+    <section id="chat-scroll" class="flex-1 overflow-y-auto px-4 py-6">
+      <div id="chat-list" class="mx-auto w-full max-w-3xl space-y-6" data-username="{{ request.user.username|escapejs }}">
+      {% if not messages %}
+        <div class="text-neutral-500 max-w-xl">
+          <p class="text-lg font-semibold text-neutral-300">Start a research thread</p>
+          <p class="mt-2">Ask a question and I will search the web and summarize findings.</p>
+        </div>
+      {% endif %}
+      {% for message in messages %}
+        <div class="max-w-3xl {% if message.role == 'user' %}ml-auto text-right{% endif %}">
+          <div class="text-xs uppercase tracking-widest text-neutral-500 mb-2">
+            {% if message.role == 'user' %}
+              {{ request.user.username }}
+            {% else %}
+              Axiom
+            {% endif %}
+          </div>
+          <div
+            class="rounded-2xl px-4 py-3 border border-neutral-800 {% if message.role == 'user' %}bg-neutral-900/80{% else %}bg-neutral-950{% endif %}"
+          >
+            {% if message.role == 'assistant' %}
+              <div
+                class="assistant-markdown text-sm leading-relaxed space-y-3"
+                data-raw="{{ message.content|escapejs }}"
+              ></div>
+            {% else %}
+              <div class="text-sm leading-relaxed whitespace-pre-wrap">
+                {{ message.content }}
+              </div>
+            {% endif %}
+            {% if message.attachments.all %}
+              <div class="mt-3 grid grid-cols-2 gap-3">
+                {% for attachment in message.attachments.all %}
+                  <img src="{{ attachment.image.url }}" alt="attachment" class="rounded-xl border border-neutral-800" />
+                {% endfor %}
+              </div>
+            {% endif %}
+          </div>
+        </div>
+      {% endfor %}
+      <div id="assistant-stream" class="max-w-3xl hidden">
+        <div class="text-xs uppercase tracking-widest text-neutral-500 mb-2">Axiom</div>
+        <div class="rounded-2xl px-4 py-3 border border-neutral-800 bg-neutral-950">
+          <div id="assistant-content" class="text-sm leading-relaxed">
+            <div class="dot-loader">
+              <span></span><span></span><span></span>
+            </div>
+          </div>
+          <div id="assistant-sources" class="mt-3 text-xs text-neutral-400 space-y-1"></div>
+        </div>
+      </div>
+      </div>
+    </section>
+
+    <footer class="px-4 pb-6">
+      <div class="mx-auto w-full max-w-3xl bg-neutral-900/70 border border-neutral-800 rounded-2xl p-3">
+        <form id="chat-form" class="flex items-end gap-3">
+          {% csrf_token %}
+          <button
+            type="button"
+            id="image-trigger"
+            class="shrink-0 w-9 h-9 rounded-full border border-neutral-700 hover:border-neutral-500 flex items-center justify-center text-neutral-300"
+          >
+            +
+          </button>
+          <div id="image-preview" class="hidden items-center gap-2">
+            <img id="image-preview-img" class="h-8 w-8 rounded-md border border-neutral-700 object-cover" alt="attachment preview" />
+            <button id="image-clear" type="button" class="text-xs text-neutral-400 hover:text-white">Remove</button>
+          </div>
+          <input id="image-input" type="file" name="image" accept="image/*" class="hidden" />
+          <textarea
+            id="chat-input"
+            name="message"
+            rows="1"
+            placeholder="Ask Axiom..."
+            class="flex-1 bg-transparent resize-none outline-none text-sm leading-6 text-neutral-100 placeholder:text-neutral-500"
+          ></textarea>
+          <button
+            type="submit"
+            class="shrink-0 px-4 py-2 rounded-xl bg-white text-neutral-900 text-sm font-semibold hover:bg-neutral-200"
+          >
+            Send
+          </button>
+        </form>
+        <p class="mt-2 text-xs text-neutral-500">Shift + Enter for a new line.</p>
+      </div>
+    </footer>
+  </main>
+</div>
+
+<script>
+  const form = document.getElementById("chat-form");
+  const input = document.getElementById("chat-input");
+  const imageInput = document.getElementById("image-input");
+  const imageTrigger = document.getElementById("image-trigger");
+  const scrollArea = document.getElementById("chat-scroll");
+  const assistantStream = document.getElementById("assistant-stream");
+  const assistantContent = document.getElementById("assistant-content");
+  const assistantSources = document.getElementById("assistant-sources");
+  const chatList = document.getElementById("chat-list");
+  const imagePreview = document.getElementById("image-preview");
+  const imagePreviewImg = document.getElementById("image-preview-img");
+  const imageClear = document.getElementById("image-clear");
+  let pastedImage = null;
+
+  function escapeHtml(value) {
+    const map = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+    return String(value).replace(/[&<>"']/g, (char) => map[char]);
+  }
+
+  function stripInlineSources(text) {
+    return text
+      .replace(/\s*\[\d+\]\([^)]+\)/g, "")
+      .replace(/\s*\[\d+\]/g, "")
+      .replace(/\s*\[\u00b9\]/g, "")
+      .replace(/\s*\[\u00b2\]/g, "")
+      .replace(/\s*\[\u00b3\]/g, "")
+      .replace(/\s*\[\u2074\]/g, "")
+      .replace(/\n+Sources:\s*[\s\S]*$/i, "");
+  }
+
+  function decodeEscapes(value) {
+    try {
+      return JSON.parse(`"${value}"`);
+    } catch (error) {
+      return value;
+    }
+  }
+
+  function renderMarkdown(text) {
+    const codeBlocks = [];
+    let working = text.replace(/```([\s\S]*?)```/g, (match, code) => {
+      const idx = codeBlocks.length;
+      codeBlocks.push(code);
+      return `@@CODE${idx}@@`;
+    });
+    working = working.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, "$1 ($2)");
+
+    let safe = escapeHtml(working);
+    safe = safe.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+    safe = safe.replace(/\*(.+?)\*/g, "<em>$1</em>");
+    safe = safe.replace(/`([^`]+)`/g, "<code>$1</code>");
+
+    const lines = safe.split(/\n/);
+    let html = "";
+    let inList = false;
+    let tableRows = [];
+
+    const flushList = () => {
+      if (inList) {
+        html += "</ul>";
+        inList = false;
+      }
+    };
+
+    const flushTable = () => {
+      if (!tableRows.length) return;
+      const [header, ...rows] = tableRows;
+      html += "<table><thead><tr>";
+      header.forEach((cell) => {
+        html += `<th>${cell}</th>`;
+      });
+      html += "</tr></thead><tbody>";
+      rows.forEach((row) => {
+        html += "<tr>";
+        row.forEach((cell) => {
+          html += `<td>${cell}</td>`;
+        });
+        html += "</tr>";
+      });
+      html += "</tbody></table>";
+      tableRows = [];
+    };
+
+    const parseTableRow = (line) =>
+      line
+        .split("|")
+        .map((cell) => cell.trim())
+        .filter((cell) => cell.length);
+
+    for (let i = 0; i < lines.length; i++) {
+      const raw = lines[i];
+      const trimmed = raw.trim();
+      if (!trimmed) {
+        flushList();
+        flushTable();
+        html += "<br>";
+        continue;
+      }
+
+      const headingMatch = trimmed.match(/^(#{2,3})\s+(.*)$/);
+      if (headingMatch) {
+        flushList();
+        flushTable();
+        html += `<h3>${headingMatch[2]}</h3>`;
+        continue;
+      }
+
+      const listMatch = trimmed.match(/^- (.+)$/);
+      if (listMatch) {
+        flushTable();
+        if (!inList) {
+          html += "<ul>";
+          inList = true;
+        }
+        html += `<li>${listMatch[1]}</li>`;
+        continue;
+      }
+
+      const isTableLine = trimmed.includes("|");
+      const next = lines[i + 1]?.trim() || "";
+      const isSeparator = /^\|?[\s:-]+\|?([\s:-]+\|?)+$/.test(next);
+      if (isTableLine && isSeparator) {
+        flushList();
+        const header = parseTableRow(trimmed);
+        i += 1;
+        tableRows = [header];
+        continue;
+      }
+      if (tableRows.length && isTableLine) {
+        tableRows.push(parseTableRow(trimmed));
+        continue;
+      }
+
+      flushList();
+      flushTable();
+      html += `<p>${trimmed}</p>`;
+    }
+
+    flushList();
+    flushTable();
+
+    codeBlocks.forEach((code, idx) => {
+      const escaped = escapeHtml(code.trim());
+      html = html.replace(`@@CODE${idx}@@`, `<pre><code>${escaped}</code></pre>`);
+    });
+
+    return html || "<p></p>";
+  }
+
+  function createBubble(role, content) {
+    const wrapper = document.createElement("div");
+    wrapper.className = `max-w-3xl ${role === "user" ? "ml-auto text-right" : ""}`;
+
+    const label = document.createElement("div");
+    label.className = "text-xs uppercase tracking-widest text-neutral-500 mb-2";
+    const username = chatList.dataset.username || "User";
+    label.textContent = role === "user" ? username : "Axiom";
+
+    const bubble = document.createElement("div");
+    bubble.className =
+      "rounded-2xl px-4 py-3 border border-neutral-800 " +
+      (role === "user" ? "bg-neutral-900/80" : "bg-neutral-950");
+
+    const body = document.createElement("div");
+    body.className = "text-sm leading-relaxed space-y-3";
+    if (role === "assistant") {
+      body.innerHTML = renderMarkdown(stripInlineSources(content));
+    } else {
+      body.className = "text-sm leading-relaxed whitespace-pre-wrap";
+      body.textContent = content;
+    }
+    bubble.appendChild(body);
+
+    wrapper.appendChild(label);
+    wrapper.appendChild(bubble);
+    return wrapper;
+  }
+
+  function autoResize() {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 180) + "px";
+  }
+
+  function getCookie(name) {
+    const value = `; ${document.cookie}`;
+    const parts = value.split(`; ${name}=`);
+    if (parts.length === 2) return parts.pop().split(";").shift();
+  }
+
+  imageTrigger.addEventListener("click", () => imageInput.click());
+  imageClear.addEventListener("click", () => {
+    pastedImage = null;
+    imageInput.value = "";
+    imagePreviewImg.src = "";
+    imagePreview.classList.add("hidden");
+  });
+
+  function showPreview(file) {
+    if (!file) return;
+    imagePreviewImg.src = URL.createObjectURL(file);
+    imagePreview.classList.remove("hidden");
+  }
+  function handlePaste(event) {
+    const files = event.clipboardData?.files || [];
+    const items = event.clipboardData?.items || [];
+    let file = files[0] || null;
+    if (!file) {
+      for (const item of items) {
+        if (item.type && item.type.startsWith("image/")) {
+          file = item.getAsFile();
+          break;
+        }
+      }
+    }
+    if (file) {
+      pastedImage = file;
+      imageInput.value = "";
+      showPreview(file);
+      event.preventDefault();
+    }
+  }
+
+  imageInput.addEventListener("change", () => {
+    pastedImage = imageInput.files[0] || null;
+    if (pastedImage) {
+      showPreview(pastedImage);
+    } else {
+      imagePreview.classList.add("hidden");
+    }
+  });
+  input.addEventListener("paste", handlePaste);
+  document.addEventListener("paste", handlePaste);
+  input.addEventListener("input", autoResize);
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      form.requestSubmit();
+    }
+  });
+
+  document.querySelectorAll(".assistant-markdown").forEach((node) => {
+    const raw = decodeEscapes(node.dataset.raw || "");
+    node.innerHTML = renderMarkdown(stripInlineSources(raw));
+  });
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const message = input.value.trim();
+    if (!message && !pastedImage) return;
+    const displayMessage = message || "Image attached";
+
+    const sessionId = "{{ active_session.id|default:'' }}";
+    const forceNew = "{{ force_new|default:'' }}" === "True";
+    const formData = new FormData();
+    formData.append("message", message);
+    if (sessionId && !forceNew) {
+      formData.append("session_id", sessionId);
+    }
+    if (pastedImage) {
+      formData.append("image", pastedImage);
+    }
+
+    input.value = "";
+    imageInput.value = "";
+    pastedImage = null;
+    imagePreviewImg.src = "";
+    imagePreview.classList.add("hidden");
+    autoResize();
+
+    const userBubble = createBubble("user", displayMessage);
+    chatList.appendChild(userBubble);
+
+    assistantStream.classList.remove("hidden");
+    assistantContent.innerHTML = '<div class="dot-loader"><span></span><span></span><span></span></div>';
+    assistantSources.innerHTML = "";
+    chatList.appendChild(assistantStream);
+
+    const response = await fetch("{% url 'chat_send' %}", {
+      method: "POST",
+      headers: { "X-CSRFToken": getCookie("csrftoken") },
+      body: formData,
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      assistantStream.classList.add("hidden");
+      const errorBubble = createBubble("assistant", data.error || "Something went wrong.");
+      chatList.appendChild(errorBubble);
+      scrollArea.scrollTop = scrollArea.scrollHeight;
+      return;
+    }
+
+    assistantStream.classList.add("hidden");
+    const assistantBubble = createBubble("assistant", data.assistant_message);
+    chatList.appendChild(assistantBubble);
+
+    if ((!sessionId || forceNew) && data.session_id) {
+      window.location.href = `/chat/${data.session_id}/`;
+    }
+
+    scrollArea.scrollTop = scrollArea.scrollHeight;
+  });
+
+  scrollArea.scrollTop = scrollArea.scrollHeight;
+</script>
+{% endblock %}

@@ -1,0 +1,31 @@
+I want to build a research agent like perplexity.ai
+The agent is powered by the kimi k2.5 model via their official API and duckduckgo mcp
+
+Doc URLS:
+moonshot api developer docs for kimi k2.5 - https://platform.moonshot.ai/docs/overview
+duckduckgo mcp - https://github.com/nickclyde/duckduckgo-mcp-server
+
+Tech Stack:
+Django
+Tailwind for style (via cdn)
+Alpine.JS for page reactivity (via cdn)
+
+NOTE: This is a technical demo so don't spend too much time on implementation accuracy, goal is to
+implement features & ensure those features are secure without any vulnerabilities. I have already
+created a boilerplate django project - axiom, start building from here
+
+1.  Basic Django login system
+2.  Chatbot app inspired by t3.chat perplexity.ai, chatgpt.com, claude.ai
+3.  Keep the website theme very minimalistic, function over features
+4.  Simple toggleable sidebar showing chat session history
+5.  Chatbox in the bottom center, no need for model selection dropdown etc..
+6.  Minimal chatbox that can accept multi-line input via shift+enter and only enter submits prompt
+7.  + icon in the chatbox that opens file explorer to allow attaching images (only images)
+8.  caching/compression strategies as required to keep image/long chat sessions sizes small enough
+      to have quick responses
+9.  Only dark theme
+10. duckduckgo mcp is the core of the chat experience as it allows model to respond accurately with
+      latest info
+
+Beyond this you are allowed to make other technical decisions on the fly as required, I just wanna
+  see outputs.
