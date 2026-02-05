@@ -42,7 +42,11 @@ SECRET_KEY = 'django-insecure-$!5e(ms^))$@^j4!gi6+ync#hwkn)t-fm7&-efuyjw2veh0!ew
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = [
+    "axiom-ai-production-9943.up.railway.app",
+    "localhost",
+    "127.0.0.1",
+]
 
 
 # Application definition
