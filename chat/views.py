@@ -11,7 +11,7 @@ from django.core.files.base import ContentFile
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_GET, require_POST
 from .forms import SignupForm
 from .models import ChatAttachment, ChatMessage, ChatSession
 from .services import SYSTEM_PROMPT, build_context_block, call_moonshot_with_retry, mcp_search
@@ -35,6 +35,37 @@ FRESHNESS_KEYWORDS = {
     "version",
     "new",
 }
+
+
+def _payload_has_context(payload: dict) -> bool:
+    results = payload.get("results") if isinstance(payload, dict) else None
+    fetched = payload.get("fetched") if isinstance(payload, dict) else None
+    return bool(results) or bool(fetched)
+
+
+def _static_response_for_query(normalized: str) -> str | None:
+    if not normalized:
+        return None
+    model_intents = {
+        "what model are you",
+        "which model are you",
+        "what model are you running",
+        "what model do you use",
+        "who built you",
+        "who made you",
+        "who created you",
+        "who are you",
+        "are you openai",
+    }
+    if normalized in model_intents or normalized.startswith("what model") or normalized.startswith("who built"):
+        return (
+            "I'm Axiom, an AI research assistant. "
+            "I don't disclose underlying model or provider details. "
+            "If you have a task, I'm ready to help."
+        )
+    if "seahorse" in normalized and ("show" in normalized or "image" in normalized or "picture" in normalized):
+        return "Here’s a seahorse image:\n\n![Seahorse](/static/chat/seahorse.svg)"
+    return None
 
 
 def _strip_sources_block(text: str) -> str:
@@ -132,6 +163,32 @@ def session_view(request, session_id):
     )
 
 
+@login_required
+@require_GET
+def chat_messages_partial(request, session_id):
+    session = get_object_or_404(ChatSession, id=session_id, user=request.user)
+    messages = session.messages.all()
+    payload = []
+    for message in messages:
+        attachments = [
+            {"url": attachment.image.url}
+            for attachment in message.attachments.all()
+        ]
+        status = "complete"
+        if message.role == "assistant" and not message.content:
+            status = "pending"
+        payload.append(
+            {
+                "id": str(message.id),
+                "role": message.role,
+                "content": message.content,
+                "status": status,
+                "attachments": attachments,
+            }
+        )
+    return JsonResponse({"messages": payload})
+
+
 def signup_view(request):
     if request.method == "POST":
         form = SignupForm(request.POST)
@@ -209,6 +266,30 @@ def chat_send(request):
             }
         )
 
+    if not upload:
+        static_response = _static_response_for_query(normalized)
+        if static_response:
+            assistant_message = ChatMessage.objects.create(
+                session=session,
+                role="assistant",
+                content=static_response,
+            )
+            session.updated_at = timezone.now()
+            session.save(update_fields=["updated_at"])
+            return JsonResponse(
+                {
+                    "session_id": str(session.id),
+                    "assistant_message": assistant_message.content,
+                    "sources": [],
+                }
+            )
+
+    assistant_message = ChatMessage.objects.create(
+        session=session,
+        role="assistant",
+        content="",
+    )
+
     mcp_payload = {}
     image_description = ""
     if image_payload:
@@ -234,11 +315,14 @@ def chat_send(request):
     if not image_payload:
         cache_key = f"mcp:{hashlib.sha256(normalized.encode('utf-8')).hexdigest()}"
         session_cache_key = f"mcp:session:{session.id}"
-        mcp_payload = cache.get(cache_key)
-        if not mcp_payload:
-            previous = cache.get(session_cache_key)
-            if previous and _can_reuse_context(normalized, previous.get("query", "")):
-                mcp_payload = previous.get("payload", {})
+        mcp_payload = cache.get(cache_key) or {}
+        if not _payload_has_context(mcp_payload):
+            previous = cache.get(session_cache_key) or {}
+            previous_payload = previous.get("payload") or {}
+            if previous_payload and _payload_has_context(previous_payload) and _can_reuse_context(
+                normalized, previous.get("query", "")
+            ):
+                mcp_payload = previous_payload
             else:
                 mcp_payload = mcp_search(message_text, max_fetch=2)
             ttl = _cache_ttl_for_query(message_text)
@@ -257,11 +341,8 @@ def chat_send(request):
 
     if not image_payload and not sources:
         assistant_text = "I couldn't retrieve web sources for that question. Please try again."
-        assistant_message = ChatMessage.objects.create(
-            session=session,
-            role="assistant",
-            content=assistant_text,
-        )
+        assistant_message.content = assistant_text
+        assistant_message.save(update_fields=["content"])
         session.updated_at = timezone.now()
         session.save(update_fields=["updated_at"])
         return JsonResponse(
@@ -298,6 +379,8 @@ def chat_send(request):
         prompt_messages.append({"role": "user", "content": content})
     else:
         for msg in history:
+            if msg.role == "assistant" and not msg.content:
+                continue
             prompt_messages.append({"role": msg.role, "content": msg.content})
 
     try:
@@ -311,11 +394,8 @@ def chat_send(request):
 
     # Sources display temporarily disabled
 
-    assistant_message = ChatMessage.objects.create(
-        session=session,
-        role="assistant",
-        content=assistant_text,
-    )
+    assistant_message.content = assistant_text
+    assistant_message.save(update_fields=["content"])
     session.updated_at = timezone.now()
     session.save(update_fields=["updated_at"])
 

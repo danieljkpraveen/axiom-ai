@@ -7,6 +7,7 @@ from .forms import LoginForm
 urlpatterns = [
     path("", views.index, name="chat_home"),
     path("chat/<uuid:session_id>/", views.session_view, name="chat_session"),
+    path("api/chat/session/<uuid:session_id>/messages/", views.chat_messages_partial, name="chat_messages_partial"),
     path("api/chat/send/", views.chat_send, name="chat_send"),
     path(
         "login/",
