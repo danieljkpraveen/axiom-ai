@@ -1,12 +1,12 @@
 import base64
-import hashlib
 import json
 import logging
+import os
+import re
 from io import BytesIO
 
 from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
-from django.core.cache import cache
 from django.core.files.base import ContentFile
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -14,7 +14,7 @@ from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 from .forms import SignupForm
 from .models import ChatAttachment, ChatMessage, ChatSession
-from .services import SYSTEM_PROMPT, build_context_block, call_moonshot_with_retry, mcp_search
+from .services import SYSTEM_PROMPT, call_moonshot_with_retry, call_moonshot_with_tools
 
 logger = logging.getLogger(__name__)
 
@@ -22,25 +22,25 @@ MAX_IMAGE_BYTES = 4 * 1024 * 1024
 MAX_IMAGE_EDGE = 1024
 MAX_HISTORY = 8
 SMALLTALK_SET = {"hi", "hello", "hey", "yo", "sup", "hola"}
-MIN_TOKEN_OVERLAP = 0.4
-DEFAULT_CACHE_TTL_SECONDS = 30 * 60
-FRESH_CACHE_TTL_SECONDS = 15 * 60
-FRESHNESS_KEYWORDS = {
+MANDATORY_SEARCH_KEYWORDS = {
     "latest",
+    "current",
     "today",
     "now",
-    "current",
-    "price",
+    "recent",
+    "released",
     "release",
     "version",
-    "new",
+    "changelog",
+    "price",
+    "pricing",
+    "ceo",
+    "president",
+    "law",
+    "regulation",
+    "news",
+    "update",
 }
-
-
-def _payload_has_context(payload: dict) -> bool:
-    results = payload.get("results") if isinstance(payload, dict) else None
-    fetched = payload.get("fetched") if isinstance(payload, dict) else None
-    return bool(results) or bool(fetched)
 
 
 def _static_response_for_query(normalized: str) -> str | None:
@@ -81,24 +81,36 @@ def _normalize_query(text: str) -> str:
     return " ".join(cleaned.split())
 
 
-def _tokenize(text: str) -> set[str]:
-    return {token for token in _normalize_query(text).split() if len(token) > 2}
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _can_reuse_context(current_query: str, previous_query: str) -> bool:
-    current_tokens = _tokenize(current_query)
-    previous_tokens = _tokenize(previous_query)
-    if not current_tokens or not previous_tokens:
-        return False
-    overlap = current_tokens.intersection(previous_tokens)
-    return len(overlap) / max(len(previous_tokens), 1) >= MIN_TOKEN_OVERLAP
+def _research_policy_prompt() -> str:
+    today = timezone.now().date().isoformat()
+    knowledge_cutoff = os.getenv("MOONSHOT_KNOWLEDGE_CUTOFF", "unknown")
+    return (
+        f"Runtime date: {today}. "
+        f"Model knowledge cutoff may be {knowledge_cutoff}. "
+        "If the user asks about events likely after the cutoff or likely to change over time, search first. "
+        "If search cannot retrieve enough reliable evidence, explicitly say what is unknown and avoid assumptions."
+    )
 
 
-def _cache_ttl_for_query(query: str) -> int:
-    tokens = _tokenize(query)
-    if tokens.intersection(FRESHNESS_KEYWORDS):
-        return FRESH_CACHE_TTL_SECONDS
-    return DEFAULT_CACHE_TTL_SECONDS
+def _requires_mandatory_search(query: str) -> bool:
+    normalized = _normalize_query(query)
+    tokens = set(normalized.split())
+    if tokens.intersection(MANDATORY_SEARCH_KEYWORDS):
+        return True
+    if re.search(r"\b(what|which)\s+.*\b(version|release)\b", normalized):
+        return True
+    if re.search(r"\b(latest|current|newest)\b", normalized):
+        return True
+    if re.search(r"\b(202[0-9]|19[0-9]{2})\b", normalized):
+        return True
+    return False
 
 
 def _compress_image(uploaded_file):
@@ -290,7 +302,6 @@ def chat_send(request):
         content="",
     )
 
-    mcp_payload = {}
     image_description = ""
     if image_payload:
         try:
@@ -312,55 +323,15 @@ def chat_send(request):
             logger.exception("Moonshot image analysis failed")
             image_description = ""
 
-    if not image_payload:
-        cache_key = f"mcp:{hashlib.sha256(normalized.encode('utf-8')).hexdigest()}"
-        session_cache_key = f"mcp:session:{session.id}"
-        mcp_payload = cache.get(cache_key) or {}
-        if not _payload_has_context(mcp_payload):
-            previous = cache.get(session_cache_key) or {}
-            previous_payload = previous.get("payload") or {}
-            if previous_payload and _payload_has_context(previous_payload) and _can_reuse_context(
-                normalized, previous.get("query", "")
-            ):
-                mcp_payload = previous_payload
-            else:
-                mcp_payload = mcp_search(message_text, max_fetch=2)
-            ttl = _cache_ttl_for_query(message_text)
-            cache.set(cache_key, mcp_payload, timeout=ttl)
-            cache.set(session_cache_key, {"query": normalized, "payload": mcp_payload}, timeout=ttl)
-
-    if image_payload and image_description:
-        search_query = " ".join(filter(None, [message_text, image_description]))
-        try:
-            mcp_payload = mcp_search(search_query, max_fetch=2)
-        except Exception:
-            logger.exception("MCP search failed for image prompt")
-            mcp_payload = {}
-
-    context_block, sources = build_context_block(mcp_payload)
-
-    if not image_payload and not sources:
-        assistant_text = "I couldn't retrieve web sources for that question. Please try again."
-        assistant_message.content = assistant_text
-        assistant_message.save(update_fields=["content"])
-        session.updated_at = timezone.now()
-        session.save(update_fields=["updated_at"])
-        return JsonResponse(
-            {
-                "session_id": str(session.id),
-                "assistant_message": assistant_message.content,
-                "sources": [],
-            }
-        )
-
     recent_messages = (
         ChatMessage.objects.filter(session=session)
         .order_by("-created_at")[:MAX_HISTORY]
     )
     history = list(reversed(recent_messages))
-    prompt_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    if context_block:
-        prompt_messages.append({"role": "system", "content": context_block})
+    prompt_messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": _research_policy_prompt()},
+    ]
     if image_payload:
         content = []
         text_parts = []
@@ -384,13 +355,35 @@ def chat_send(request):
             prompt_messages.append({"role": msg.role, "content": msg.content})
 
     try:
-        assistant_text = call_moonshot_with_retry(prompt_messages)
+        if image_payload:
+            assistant_text = call_moonshot_with_retry(prompt_messages)
+        else:
+            search_enabled = _env_flag("MOONSHOT_ENABLE_WEB_SEARCH", default=True)
+            if search_enabled and _requires_mandatory_search(message_text):
+                prompt_messages.insert(
+                    2,
+                    {
+                        "role": "system",
+                        "content": (
+                            "Mandatory action: call $web_search before answering this query. "
+                            "Use retrieved evidence to answer. If evidence is missing/conflicting, say so."
+                        ),
+                    },
+                )
+            search_model = os.getenv("MOONSHOT_SEARCH_MODEL", "moonshot-v1-auto") if search_enabled else None
+            assistant_text = call_moonshot_with_tools(
+                prompt_messages,
+                enable_web_search=search_enabled,
+                model_override=search_model,
+            )
     except Exception as exc:
         logger.exception("Moonshot request failed")
         assistant_text = "The model is slow or unavailable right now. Please try again in a moment."
 
     if assistant_text:
         assistant_text = _strip_sources_block(assistant_text)
+    if not assistant_text or not str(assistant_text).strip():
+        assistant_text = "I couldn't complete a grounded answer for that request. Please try rephrasing."
 
     # Sources display temporarily disabled
 

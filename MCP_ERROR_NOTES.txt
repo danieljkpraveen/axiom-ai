@@ -1,38 +1,17 @@
-MCP Error Notes (DuckDuckGo MCP)
-================================
+Search Migration Notes
+======================
 
-Observed error (2026-02-05):
-- DuckDuckGo MCP returns HTTP 302 redirect to /50x.html?e=3
-- Followed by an AttributeError:
-  "module 'httpx' has no attribute 'TimeoutError'"
+As of February 16, 2026, Axiom no longer uses DuckDuckGo MCP for retrieval.
 
-Log excerpt:
-- Redirect response '302 Found' for https://html.duckduckgo.com/html
-  Redirect location: /50x.html?e=3
-- AttributeError in duckduckgo_mcp_server/server.py while handling the redirect
-  (tries to catch httpx.TimeoutError)
+What changed:
+- Removed `duckduckgo-mcp-server` and `mcp` usage from the app runtime.
+- Text prompts now use Moonshot tool-calling with `$web_search`.
+- Default search model is `moonshot-v1-auto` (configurable via env).
 
-Likely causes:
-1) DuckDuckGo transient blocking or rate limiting, redirecting to a 50x page.
-2) duckduckgo-mcp-server 0.1.1 expects httpx.TimeoutError, but
-   httpx>=0.28 uses TimeoutException (no TimeoutError symbol).
+New env variables:
+- `MOONSHOT_SEARCH_MODEL` (default: `moonshot-v1-auto`)
+- `MOONSHOT_ENABLE_WEB_SEARCH` (default: `true`)
 
-Impact:
-- The MCP server logs a stack trace when DDG redirects.
-- Chat response can still be generated, but logs are noisy.
-
-Potential proper fixes (not implemented yet):
-1) Update duckduckgo-mcp-server to a version compatible with httpx>=0.28.
-2) If no updated MCP server exists, fork and fix exception handling.
-3) Add retries/backoff in MCP server or in app layer for DDG 302 responses.
-
-Current status:
-- No local patch applied.
-- requirements.txt no longer pins httpx.
-  The venv currently has:
-  - duckduckgo-mcp-server 0.1.1
-  - httpx 0.28.1
-
-Notes:
-- This log only appears when DDG returns a 302 to /50x.html?e=3.
-- It does not always block responses but creates noisy traces.
+Operational effect:
+- No local MCP process is launched for chat requests.
+- Previous DDG redirect/timeouts and MCP exception noise should not occur.
