@@ -14,7 +14,7 @@ from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 from .forms import SignupForm
 from .models import ChatAttachment, ChatMessage, ChatSession
-from .services import SYSTEM_PROMPT, build_context_block, call_moonshot_with_retry, mcp_search
+from .services import SYSTEM_PROMPT, build_context_block, call_moonshot_with_retry, moonshot_web_search
 
 logger = logging.getLogger(__name__)
 
@@ -290,7 +290,7 @@ def chat_send(request):
         content="",
     )
 
-    mcp_payload = {}
+    search_payload = {}
     image_description = ""
     if image_payload:
         try:
@@ -313,31 +313,31 @@ def chat_send(request):
             image_description = ""
 
     if not image_payload:
-        cache_key = f"mcp:{hashlib.sha256(normalized.encode('utf-8')).hexdigest()}"
-        session_cache_key = f"mcp:session:{session.id}"
-        mcp_payload = cache.get(cache_key) or {}
-        if not _payload_has_context(mcp_payload):
+        cache_key = f"web-search:{hashlib.sha256(normalized.encode('utf-8')).hexdigest()}"
+        session_cache_key = f"web-search:session:{session.id}"
+        search_payload = cache.get(cache_key) or {}
+        if not _payload_has_context(search_payload):
             previous = cache.get(session_cache_key) or {}
             previous_payload = previous.get("payload") or {}
             if previous_payload and _payload_has_context(previous_payload) and _can_reuse_context(
                 normalized, previous.get("query", "")
             ):
-                mcp_payload = previous_payload
+                search_payload = previous_payload
             else:
-                mcp_payload = mcp_search(message_text, max_fetch=2)
+                search_payload = moonshot_web_search(message_text, max_fetch=2)
             ttl = _cache_ttl_for_query(message_text)
-            cache.set(cache_key, mcp_payload, timeout=ttl)
-            cache.set(session_cache_key, {"query": normalized, "payload": mcp_payload}, timeout=ttl)
+            cache.set(cache_key, search_payload, timeout=ttl)
+            cache.set(session_cache_key, {"query": normalized, "payload": search_payload}, timeout=ttl)
 
     if image_payload and image_description:
         search_query = " ".join(filter(None, [message_text, image_description]))
         try:
-            mcp_payload = mcp_search(search_query, max_fetch=2)
+            search_payload = moonshot_web_search(search_query, max_fetch=2)
         except Exception:
-            logger.exception("MCP search failed for image prompt")
-            mcp_payload = {}
+            logger.exception("Moonshot web search failed for image prompt")
+            search_payload = {}
 
-    context_block, sources = build_context_block(mcp_payload)
+    context_block, sources = build_context_block(search_payload)
 
     if not image_payload and not sources:
         assistant_text = "I couldn't retrieve web sources for that question. Please try again."
