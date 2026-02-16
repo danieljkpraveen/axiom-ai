@@ -133,7 +133,7 @@ def moonshot_web_search(query: str, max_fetch: int = 2) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "temperature": 0,
+            "temperature": 1,
             "tools": tools,
             "tool_choice": "auto",
         }
